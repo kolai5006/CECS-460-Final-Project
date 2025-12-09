@@ -1,6 +1,6 @@
 /*
- * ESP32 BLE SERVER (Slave)
- * Receives commands from Master and responds automatically
+ * ESP32 BLE SERVER (Slave) - Temperature Receiver
+ * Receives and displays temperature data from Master
  */
 
 #include <BLEDevice.h>
@@ -23,8 +23,10 @@ class MyServerCallbacks: public BLEServerCallbacks {
     connected = true;
     digitalWrite(LED_PIN, HIGH);
     
-    Serial.println("\n=== MASTER CONNECTED! ===");
-    Serial.println("Waiting to receive commands from Master...");
+    Serial.println("\n========================================");
+    Serial.println("=== MASTER CONNECTED! ===");
+    Serial.println("Waiting to receive temperature data...");
+    Serial.println("========================================\n");
     
     pServer->updateConnParams(param->connect.remote_bda, 10, 20, 0, 400);
   }
@@ -43,31 +45,46 @@ class MyServerCallbacks: public BLEServerCallbacks {
   }
 };
 
-// Callback when we receive a command from Master
+// Callback when we receive temperature data from Master
 class MyCharCallbacks: public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pChar) {
     String received = pChar->getValue().c_str();
     
     if (received.length() > 0) {
-      Serial.println("\n>>> Received command from Master: " + received);
-      
-      // Determine response based on command
-      String response = "";
-      if (received == "PING") {
-        response = "PONG";
-      } else if (received == "HELLO") {
-        response = "HI THERE";
-      } else if (received == "STATUS") {
-        response = "ALL GOOD";
+      // Check if it's a temperature message
+      if (received.startsWith("TEMP|")) {
+        // Parse the temperature data
+        Serial.println("\n╔════════════════════════════════════════╗");
+        Serial.println("║    TEMPERATURE DATA RECEIVED           ║");
+        Serial.println("╚════════════════════════════════════════╝");
+        
+        // Extract external temperature
+        int extStart = received.indexOf("External:") + 9;
+        int extEnd = received.indexOf("F", extStart);
+        String externalTemp = received.substring(extStart, extEnd);
+        
+        // Extract internal temperature
+        int intStart = received.indexOf("Internal:") + 9;
+        int intEnd = received.indexOf("F", intStart);
+        String internalTemp = received.substring(intStart, intEnd);
+        
+        Serial.println("  📊 External Temperature: " + externalTemp + " °F");
+        Serial.println("  🌡️  Internal Temperature: " + internalTemp + " °F");
+        Serial.println("══════════════════════════════════════════\n");
+        
+        // Send acknowledgment back to Master
+        String ack = "ACK|Received temps";
+        pChar->setValue(ack.c_str());
+        pChar->notify();
+        
       } else {
-        response = "RECEIVED: " + received;
+        // Handle other messages
+        Serial.println("\n>>> Received: " + received);
+        
+        String response = "RECEIVED: " + received;
+        pChar->setValue(response.c_str());
+        pChar->notify();
       }
-      
-      Serial.println("<<< Sending response: " + response);
-      
-      // Send response back to Master
-      pChar->setValue(response.c_str());
-      pChar->notify();
     }
   }
 };
@@ -79,8 +96,9 @@ void setup() {
   
   delay(1000);
   
-  Serial.println("\n=== ESP32 BLE SERVER (Slave) ===");
-  Serial.println("This device receives commands and responds automatically");
+  Serial.println("\n╔════════════════════════════════════════╗");
+  Serial.println("║  ESP32 BLE SLAVE - Temp Receiver      ║");
+  Serial.println("╚════════════════════════════════════════╝");
   Serial.println("Initializing BLE...");
   
   BLEDevice::init(SERVER_NAME);
@@ -111,12 +129,22 @@ void setup() {
   pAdvertising->setMaxPreferred(0x12);
   pAdvertising->start();
   
-  Serial.println("BLE Server started!");
-  Serial.println("Device name: " + String(SERVER_NAME));
-  Serial.println("Waiting for Master to connect...");
+  Serial.println("✓ BLE Server started!");
+  Serial.println("✓ Device name: " + String(SERVER_NAME));
+  Serial.println("✓ Waiting for Master to connect...\n");
 }
 
 void loop() {
-  // Slave just waits for commands - no user input needed
+  // Display connection status indicator
+  static unsigned long lastStatus = 0;
+  if (millis() - lastStatus > 5000) {
+    lastStatus = millis();
+    if (connected) {
+      Serial.println("[Status: Connected - Receiving data...]");
+    } else {
+      Serial.println("[Status: Waiting for connection...]");
+    }
+  }
+  
   delay(1000);
 }
