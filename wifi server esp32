@@ -1,0 +1,183 @@
+/******************************************************
+ * ESP32 Web Server + Lab 7 Thermistor Temperature System
+ * Designed for CECS 460 Final / Lab Integration
+ *
+ * - External Thermistor on GPIO34
+ * - 10k NTC + 10k resistor voltage divider
+ * - ADC -> SMA filter -> LUT -> °C/°F conversion
+ * - Internal ESP32 temperature sensor
+ * - Web server displaying live temperature data
+ * - Auto-refresh webpage every 1 second
+ *
+ * NO DHT SENSOR. NO DHT LIBRARIES.
+ ******************************************************/
+
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ----------------------------------------------------
+// WIFI SETTINGS (YOUR iPhone Hotspot)
+// ----------------------------------------------------
+const char* ssid = "B.F iPhone XR";      // <-- YOUR HOTSPOT NAME
+const char* password = "mav34hv55p7kh";  // <-- YOUR HOTSPOT PASSWORD
+
+// ----------------------------------------------------
+// WEB SERVER
+// ----------------------------------------------------
+WebServer server(80);
+
+// ----------------------------------------------------
+// LAB 7 CONFIG (from your PDF)
+// ----------------------------------------------------
+#define PIN_ANALOG_IN 34
+#define SMA_SIZE 5
+
+// ----- SMA FILTER VARIABLES -----
+int smaBuffer[SMA_SIZE];
+int smaIndex = 0;
+bool smaFilled = false;
+
+// ----- LUT ADC -> Celsius -----
+int LUT_ADC[] = {100,200,300,400,500,600,700,800,900,1000};
+int LUT_C[]   = {  0, 10, 20, 30, 40, 50, 60, 70, 80,  90};
+int LUT_SIZE = 10;
+
+// =======================================================
+// MOVING AVERAGE FILTER (5-sample SMA)
+// =======================================================
+float smaFilter(int newValue) {
+  smaBuffer[smaIndex] = newValue;
+  smaIndex = (smaIndex + 1) % SMA_SIZE;
+
+  if (smaIndex == 0) smaFilled = true;
+
+  int count = smaFilled ? SMA_SIZE : smaIndex;
+  long sum = 0;
+
+  for (int i = 0; i < count; i++) {
+    sum += smaBuffer[i];
+  }
+
+  return (float)sum / count;
+}
+
+// =======================================================
+// LUT CONVERSION W/ LINEAR INTERPOLATION
+// =======================================================
+float LUT_to_Celsius(int adc) {
+  if (adc <= LUT_ADC[0]) return LUT_C[0];
+  if (adc >= LUT_ADC[LUT_SIZE - 1]) return LUT_C[LUT_SIZE - 1];
+
+  for (int i = 0; i < LUT_SIZE - 1; i++) {
+    if (adc >= LUT_ADC[i] && adc <= LUT_ADC[i + 1]) {
+
+      float x0 = LUT_ADC[i];
+      float x1 = LUT_ADC[i + 1];
+      float y0 = LUT_C[i];
+      float y1 = LUT_C[i + 1];
+
+      float t = (adc - x0) / (x1 - x0);
+      return y0 + t * (y1 - y0);
+    }
+  }
+
+  return -1; // should never hit
+}
+
+// =======================================================
+// HANDLE WEBPAGE REQUEST
+// =======================================================
+void handleRoot() {
+
+  // INTERNAL TEMP
+  float internalC = temperatureRead();
+  float internalF = internalC * 9.0/5.0 + 32.0;
+
+  // EXTERNAL ADC
+  int rawADC = analogRead(PIN_ANALOG_IN);
+  float filteredADC = smaFilter(rawADC);
+
+  // LUT CONVERSION
+  float tempC = LUT_to_Celsius(filteredADC);
+  float tempF = tempC * 9.0/5.0 + 32.0;
+
+  // ---------------------------------------------------
+  // BUILD HTML PAGE
+  // ---------------------------------------------------
+  String html = "<html><head>";
+  html += "<meta http-equiv='refresh' content='1' />"; // auto-refresh 1 sec
+
+  html += "<style>";
+  html += "body { background:#111; color:#eee; font-family:Arial; text-align:center; padding-top:40px; }";
+  html += "h1 { color:#40c8ff; }";
+  html += ".box { background:#222; padding:20px; border-radius:10px; margin:20px auto; width:300px; }";
+  html += "</style>";
+
+  html += "</head><body>";
+
+  html += "<h1>ESP32 Live Temperature Server</h1>";
+
+  // EXTERNAL SENSOR BOX
+  html += "<div class='box'>";
+  html += "<h2>External Thermistor</h2>";
+  html += "<p>RAW ADC: " + String(rawADC) + "</p>";
+  html += "<p>SMA ADC: " + String(filteredADC) + "</p>";
+  html += "<p><b>" + String(tempC,2) + " °C</b></p>";
+  html += "<p><b>" + String(tempF,2) + " °F</b></p>";
+  html += "</div>";
+
+  // INTERNAL SENSOR BOX
+  html += "<div class='box'>";
+  html += "<h2>Internal ESP32 Temp</h2>";
+  html += "<p><b>" + String(internalC,2) + " °C</b></p>";
+  html += "<p><b>" + String(internalF,2) + " °F</b></p>";
+  html += "</div>";
+
+  html += "</body></html>";
+
+  server.send(200, "text/html", html);
+}
+
+void handleNotFound() {
+  server.send(404, "text/plain", "404 Not Found");
+}
+
+// =======================================================
+// SETUP
+// =======================================================
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+
+  Serial.println("\n=== ESP32 LAB 7 TEMP WEB SERVER ===\n");
+
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIN_ANALOG_IN, ADC_11db);
+
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(400);
+  }
+
+  Serial.println("\nWiFi Connected!");
+  Serial.print("ESP32 Web Server IP: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", handleRoot);
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("HTTP Server Started.\n");
+}
+
+// =======================================================
+// LOOP
+// =======================================================
+void loop() {
+  server.handleClient();
+}
