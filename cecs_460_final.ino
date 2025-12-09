@@ -1,114 +1,170 @@
 /*
  * ESP32 BLE CLIENT (Master)
- * This will connect to the BLE Server and light up LED when connected
+ * Type commands in Serial Monitor to send to Slave
  */
 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEClient.h>
 
-// BLE Server name (must match the server)
 #define SERVER_NAME "ESP32_Server"
+#define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHAR_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-// LED Pin
 const int LED_PIN = 2;
 
-// BLE variables
 BLEClient* pClient = nullptr;
+BLERemoteCharacteristic* pRemoteChar = nullptr;
 BLEAddress* pServerAddress = nullptr;
 bool connected = false;
 bool doConnect = false;
+bool doScan = false;
 
-// Callback when device is found during scan
+// Callback when slave sends us a response
+static void notifyCallback(BLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
+  String received = "";
+  for(int i = 0; i < length; i++) {
+    received += (char)pData[i];
+  }
+  
+  Serial.println("\n>>> Received response from Slave: " + received);
+}
+
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) {
-    Serial.print("Device found: ");
-    Serial.println(advertisedDevice.toString().c_str());
-    
-    // Check if this is our server
     if (advertisedDevice.getName() == SERVER_NAME) {
-      Serial.println("Found our server!");
+      Serial.println("Found our slave!");
       advertisedDevice.getScan()->stop();
       pServerAddress = new BLEAddress(advertisedDevice.getAddress());
       doConnect = true;
+      doScan = false;
     }
   }
 };
 
-// Callback for connection events
 class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pclient) {
-    Serial.println("Connected to server!");
+    Serial.println("=== Connected to Slave! ===");
+    Serial.println("Type a message and press Enter to send to Slave");
+    Serial.println("Try: PING, HELLO, STATUS, or any message");
     connected = true;
     digitalWrite(LED_PIN, HIGH);
   }
 
   void onDisconnect(BLEClient* pclient) {
-    Serial.println("Disconnected from server!");
+    Serial.println("=== Disconnected from Slave! ===");
     connected = false;
     digitalWrite(LED_PIN, LOW);
+    pRemoteChar = nullptr;
+    doScan = true;
   }
 };
+
+bool connectToServer() {
+  Serial.println("Connecting to slave...");
+  
+  if (pClient == nullptr) {
+    pClient = BLEDevice::createClient();
+    pClient->setClientCallbacks(new MyClientCallback());
+  }
+  
+  if (!pClient->connect(*pServerAddress)) {
+    Serial.println("Failed to connect!");
+    return false;
+  }
+  
+  Serial.println("Connected! Getting service...");
+  
+  BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
+  if (pRemoteService == nullptr) {
+    Serial.println("Failed to find service!");
+    pClient->disconnect();
+    return false;
+  }
+  
+  Serial.println("Service found! Getting characteristic...");
+  
+  pRemoteChar = pRemoteService->getCharacteristic(CHAR_UUID);
+  if (pRemoteChar == nullptr) {
+    Serial.println("Failed to find characteristic!");
+    pClient->disconnect();
+    return false;
+  }
+  
+  Serial.println("Characteristic found! Registering for notifications...");
+  
+  if(pRemoteChar->canNotify()) {
+    pRemoteChar->registerForNotify(notifyCallback);
+  }
+  
+  Serial.println("=== Setup complete! Ready to send commands ===");
+  connected = true;
+  digitalWrite(LED_PIN, HIGH);
+  return true;
+}
 
 void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
+  delay(1000);
+  
   Serial.println("\n=== ESP32 BLE CLIENT (Master) ===");
-  Serial.println("Initializing BLE...");
+  Serial.println("This device sends commands to Slave");
   
   BLEDevice::init("ESP32_Client");
+  BLEDevice::setMTU(517);
   
-  // Start scanning for server
-  Serial.println("Scanning for server...");
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setActiveScan(true);
-  pBLEScan->start(30); // Scan for 30 seconds
+  Serial.println("Scanning for slave...");
+  doScan = true;
 }
 
 void loop() {
-  // If we found the server, try to connect
+  if (doScan) {
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+    pBLEScan->setActiveScan(true);
+    pBLEScan->setInterval(100);
+    pBLEScan->setWindow(99);
+    pBLEScan->start(5, false);
+    doScan = false;
+  }
+  
   if (doConnect) {
     doConnect = false;
-    
-    Serial.println("Attempting to connect...");
-    
-    pClient = BLEDevice::createClient();
-    pClient->setClientCallbacks(new MyClientCallback());
-    
-    // Connect to the server
-    if (pClient->connect(*pServerAddress)) {
-      Serial.println("Connection successful!");
-      connected = true;
-      digitalWrite(LED_PIN, HIGH);
+    if (connectToServer()) {
+      Serial.println("Successfully connected and configured!");
     } else {
-      Serial.println("Connection failed!");
+      Serial.println("Connection failed, will scan again...");
+      doScan = true;
+    }
+  }
+  
+  // Check if user typed a command in Serial Monitor
+  if (Serial.available() && connected) {
+    String message = Serial.readStringUntil('\n');
+    message.trim();
+    
+    if (message.length() > 0 && pRemoteChar != nullptr) {
+      Serial.println("<<< Sending to Slave: " + message);
+      pRemoteChar->writeValue(message.c_str(), message.length());
+      Serial.println("Command sent!");
+    }
+  }
+  
+  if (connected && pClient != nullptr) {
+    if (!pClient->isConnected()) {
+      Serial.println("Connection lost detected!");
       connected = false;
       digitalWrite(LED_PIN, LOW);
+      pRemoteChar = nullptr;
+      delay(1000);
+      doScan = true;
     }
   }
   
-  // If disconnected, try to reconnect
-  if (!connected && pServerAddress != nullptr) {
-    Serial.println("Attempting to reconnect...");
-    if (pClient->connect(*pServerAddress)) {
-      Serial.println("Reconnected!");
-      connected = true;
-      digitalWrite(LED_PIN, HIGH);
-    } else {
-      Serial.println("Reconnection failed, will retry...");
-      delay(5000);
-    }
-  }
-  
-  // Monitor connection status
-  if (connected) {
-    Serial.print(".");
-  }
-  
-  delay(1000);
+  delay(100);
 }
 // // CECS 460 Lab 7: ADC Temperature Sensing with Bluetooth Transmission
 // // ESP32 Temperature monitoring using external thermistor - SENDER
