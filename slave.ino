@@ -1,12 +1,13 @@
 /*
- * ESP32 BLE SERVER (Slave) - Temperature Receiver
- * Receives and displays temperature data from Master
+ * ESP32 BLE SERVER (Slave) - Temperature Receiver with LCD Display
+ * Receives and displays temperature data from Master on LCD1602
  */
 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include <BLE2902.h>
+#include <LiquidCrystal.h>
 
 #define SERVER_NAME "ESP32_Server"
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -14,28 +15,50 @@
 
 const int LED_PIN = 2;
 
+// Initialize LCD with pin numbers: RS, E, D4, D5, D6, D7
+// Using GPIO: 19, 23, 18, 5, 4, 2 (changed from LED_PIN to 13)
+LiquidCrystal lcd(19, 23, 18, 5, 4, 13);
+
 BLEServer* pServer = nullptr;
 BLECharacteristic* pCharacteristic = nullptr;
 bool connected = false;
 
+String externalTemp = "--";
+String internalTemp = "--";
+
+// Forward declaration
+void updateLCD();
+
 class MyServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t *param) {
     connected = true;
-    digitalWrite(LED_PIN, HIGH);
     
     Serial.println("\n========================================");
     Serial.println("=== MASTER CONNECTED! ===");
     Serial.println("Waiting to receive temperature data...");
     Serial.println("========================================\n");
     
+    // Update LCD to show connected status
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Master Connected");
+    lcd.setCursor(0, 1);
+    lcd.print("Waiting for data");
+    
     pServer->updateConnParams(param->connect.remote_bda, 10, 20, 0, 400);
   }
 
   void onDisconnect(BLEServer* pServer) {
     connected = false;
-    digitalWrite(LED_PIN, LOW);
     
     Serial.println("\n=== MASTER DISCONNECTED ===");
+    
+    // Update LCD to show disconnected status
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Disconnected");
+    lcd.setCursor(0, 1);
+    lcd.print("Waiting...");
     
     delay(500);
     
@@ -61,16 +84,21 @@ class MyCharCallbacks: public BLECharacteristicCallbacks {
         // Extract external temperature
         int extStart = received.indexOf("External:") + 9;
         int extEnd = received.indexOf("F", extStart);
-        String externalTemp = received.substring(extStart, extEnd);
+        externalTemp = received.substring(extStart, extEnd);
+        externalTemp.trim();
         
         // Extract internal temperature
         int intStart = received.indexOf("Internal:") + 9;
         int intEnd = received.indexOf("F", intStart);
-        String internalTemp = received.substring(intStart, intEnd);
+        internalTemp = received.substring(intStart, intEnd);
+        internalTemp.trim();
         
         Serial.println("  📊 External Temperature: " + externalTemp + " °F");
         Serial.println("  🌡️  Internal Temperature: " + internalTemp + " °F");
         Serial.println("══════════════════════════════════════════\n");
+        
+        // Display on LCD
+        updateLCD();
         
         // Send acknowledgment back to Master
         String ack = "ACK|Received temps";
@@ -89,10 +117,36 @@ class MyCharCallbacks: public BLECharacteristicCallbacks {
   }
 };
 
+void updateLCD() {
+  lcd.clear();
+  
+  // Line 1: External temperature
+  lcd.setCursor(0, 0);
+  lcd.print("Ext:");
+  lcd.print(externalTemp);
+  lcd.print((char)223); // Degree symbol
+  lcd.print("F");
+  
+  // Line 2: Internal temperature
+  lcd.setCursor(0, 1);
+  lcd.print("Int:");
+  lcd.print(internalTemp);
+  lcd.print((char)223); // Degree symbol
+  lcd.print("F");
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  
+  // Initialize LCD
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("BLE Temp Receiver");
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
   
   delay(1000);
   
@@ -132,6 +186,13 @@ void setup() {
   Serial.println("✓ BLE Server started!");
   Serial.println("✓ Device name: " + String(SERVER_NAME));
   Serial.println("✓ Waiting for Master to connect...\n");
+  
+  // Update LCD to show ready status
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ready!");
+  lcd.setCursor(0, 1);
+  lcd.print("Waiting...");
 }
 
 void loop() {
@@ -141,10 +202,12 @@ void loop() {
     lastStatus = millis();
     if (connected) {
       Serial.println("[Status: Connected - Receiving data...]");
+      // Blink LED when connected
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
     } else {
       Serial.println("[Status: Waiting for connection...]");
+      digitalWrite(LED_PIN, LOW);
     }
   }
   
   delay(1000);
-}
